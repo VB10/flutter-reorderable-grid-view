@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_reorderable_grid_view/controller/reorderable_builder_controller.dart';
 import 'package:flutter_reorderable_grid_view/entities/reorder_update_entity.dart';
 import 'package:flutter_reorderable_grid_view/entities/reorderable_entity.dart';
+import 'package:flutter_reorderable_grid_view/entities/reorderable_layout_candidate.dart';
 import 'package:flutter_reorderable_grid_view/utils/definitions.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 
@@ -227,113 +228,126 @@ class ReorderableWrapController extends ReorderableBuilderController {
     required ReorderableEntity? collision,
     required Offset draggedOffset,
   }) {
-    final draggedEntity = this.draggedEntity;
+    final draggedKey = draggedEntity?.key;
     final renderBox = _getRenderBox();
-    if (draggedEntity == null || renderBox == null) {
+    if (draggedKey == null || renderBox == null) {
       return false;
     }
 
     final currentOrder = _getOrderedEntities();
     final draggedIndex = currentOrder.indexWhere(
-      (entity) => entity.key == draggedEntity.key,
+      (entity) => entity.key == draggedKey,
     );
     if (draggedIndex < 0) {
       return false;
     }
+
     final dragged = currentOrder[draggedIndex];
-    final currentOffsets = _calculateOffsets(
-      orderedEntities: currentOrder,
+    final origin = _getLayoutOrigin(renderBox: renderBox);
+    final current = _layOutOrder(
+      order: currentOrder,
       renderBox: renderBox,
+      origin: origin,
     );
-    final currentOffsetByKey = <Key, Offset>{
-      for (final (index, entity) in currentOrder.indexed)
-        entity.key: currentOffsets[index],
-    };
-    final draggedRect = currentOffsets[draggedIndex] & dragged.size;
-    if (draggedRect.contains(draggedOffset)) {
+    if (current.rectOf(dragged).contains(draggedOffset)) {
       return false;
     }
 
-    List<ReorderableEntity>? bestOrder;
-    List<Offset>? bestOffsets;
+    final best = _leastMovingCandidate(
+      current: current,
+      dragged: dragged,
+      collision: collision,
+      draggedOffset: draggedOffset,
+      renderBox: renderBox,
+      origin: origin,
+    );
+    if (best == null) {
+      return false;
+    }
+
+    _applyCandidate(best);
+    return true;
+  }
+
+  /// Returns the order that puts [dragged] under [draggedOffset] and moves
+  /// the other children of [current] the least, or null if there is none.
+  ReorderableLayoutCandidate? _leastMovingCandidate({
+    required ReorderableLayoutCandidate current,
+    required ReorderableEntity dragged,
+    required ReorderableEntity? collision,
+    required Offset draggedOffset,
+    required RenderBox renderBox,
+    required Offset origin,
+  }) {
+    ReorderableLayoutCandidate? best;
     var bestMovement = double.infinity;
+
     for (final order in _candidateOrders(
-      currentOrder: currentOrder,
-      draggedIndex: draggedIndex,
+      currentOrder: current.order,
+      dragged: dragged,
       collision: collision,
     )) {
-      final offsets = _calculateOffsets(
-        orderedEntities: order,
+      final candidate = _layOutOrder(
+        order: order,
         renderBox: renderBox,
+        origin: origin,
       );
-      final orderIndex = order.indexWhere(
-        (entity) => entity.key == dragged.key,
-      );
-      final isUnderPointer =
-          (offsets[orderIndex] & dragged.size).contains(draggedOffset);
-      if (!isUnderPointer) {
+      if (!candidate.rectOf(dragged).contains(draggedOffset)) {
         continue;
       }
-      var movement = 0.0;
-      for (final (index, entity) in order.indexed) {
-        if (entity.key == dragged.key) {
-          continue;
-        }
-        final before = currentOffsetByKey[entity.key] ?? offsets[index];
-        movement += (offsets[index] - before).distance;
-      }
+
+      final movement = candidate.movementFrom(current, movedEntity: dragged);
       if (movement < bestMovement) {
-        bestOrder = order;
-        bestOffsets = offsets;
+        best = candidate;
         bestMovement = movement;
       }
     }
 
-    if (bestOrder == null || bestOffsets == null) {
-      return false;
-    }
-    for (final (index, entity) in bestOrder.indexed) {
+    return best;
+  }
+
+  /// Gives every child of [candidate] its index and offset in it.
+  void _applyCandidate(ReorderableLayoutCandidate candidate) {
+    for (final (index, entity) in candidate.order.indexed) {
       _updateEntity(
         entity: entity.dragUpdated(
           updatedOrderId: index,
-          updatedOffset: bestOffsets[index],
+          updatedOffset: candidate.offsets[index],
         ),
       );
     }
-    return true;
   }
 
-  /// Returns the orders the dragged child can move to.
+  /// Lays out [order] in [renderBox], starting at [origin].
+  ReorderableLayoutCandidate _layOutOrder({
+    required List<ReorderableEntity> order,
+    required RenderBox renderBox,
+    required Offset origin,
+  }) {
+    final offsets = _layOut(entities: order, renderBox: renderBox)
+        .map((offset) => offset + origin)
+        .toList();
+    return ReorderableLayoutCandidate(order: order, offsets: offsets);
+  }
+
+  /// Returns the orders [dragged] can move to.
   ///
-  /// These are the dragged child exchanged with [collision] and the dragged
-  /// child moved to every other index. Orders that move a locked child are
-  /// left out.
+  /// These are [dragged] exchanged with [collision] and [dragged] moved to
+  /// every other index. Orders that move a locked child are left out.
   List<List<ReorderableEntity>> _candidateOrders({
     required List<ReorderableEntity> currentOrder,
-    required int draggedIndex,
+    required ReorderableEntity dragged,
     required ReorderableEntity? collision,
   }) {
-    final dragged = currentOrder[draggedIndex];
-    final others =
-        currentOrder.where((entity) => entity.key != dragged.key).toList();
-    final candidates = <List<ReorderableEntity>>[];
-    if (collision != null) {
-      final collisionIndex = currentOrder.indexWhere(
-        (entity) => entity.key == collision.key,
-      );
-      if (collisionIndex >= 0) {
-        final exchanged = List.of(currentOrder);
-        exchanged[draggedIndex] = currentOrder[collisionIndex];
-        exchanged[collisionIndex] = dragged;
-        candidates.add(exchanged);
-      }
-    }
-    for (var index = 0; index <= others.length; index++) {
-      if (index == draggedIndex) {
-        continue;
-      }
-      candidates.add(List.of(others)..insert(index, dragged));
-    }
+    final exchanged = _exchangedOrder(
+      currentOrder: currentOrder,
+      dragged: dragged,
+      collision: collision,
+    );
+    final candidates = [
+      if (exchanged != null) exchanged,
+      ..._movedOrders(currentOrder: currentOrder, dragged: dragged),
+    ];
     return candidates
         .where(
           (order) => _keepsLockedChildren(
@@ -342,6 +356,43 @@ class ReorderableWrapController extends ReorderableBuilderController {
           ),
         )
         .toList();
+  }
+
+  /// Returns [currentOrder] with [dragged] and [collision] exchanged, or
+  /// null without a [collision].
+  List<ReorderableEntity>? _exchangedOrder({
+    required List<ReorderableEntity> currentOrder,
+    required ReorderableEntity dragged,
+    required ReorderableEntity? collision,
+  }) {
+    if (collision == null) {
+      return null;
+    }
+
+    final draggedIndex = currentOrder.indexOf(dragged);
+    final collisionIndex = currentOrder.indexWhere(
+      (entity) => entity.key == collision.key,
+    );
+    if (collisionIndex < 0) {
+      return null;
+    }
+
+    return List.of(currentOrder)
+      ..[draggedIndex] = currentOrder[collisionIndex]
+      ..[collisionIndex] = dragged;
+  }
+
+  /// Returns [currentOrder] with [dragged] moved to every other index.
+  List<List<ReorderableEntity>> _movedOrders({
+    required List<ReorderableEntity> currentOrder,
+    required ReorderableEntity dragged,
+  }) {
+    final draggedIndex = currentOrder.indexOf(dragged);
+    final others = List.of(currentOrder)..removeAt(draggedIndex);
+    return [
+      for (var index = 0; index <= others.length; index++)
+        if (index != draggedIndex) List.of(others)..insert(index, dragged),
+    ];
   }
 
   /// Returns true if every locked child of [currentOrder] keeps its index.
