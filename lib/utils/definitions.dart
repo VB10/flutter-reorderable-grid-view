@@ -55,3 +55,16 @@ typedef OnDragEndFunction = void Function(
 /// The returned widget is laid out to fill the slot of the dragged child.
 /// [size] is the last measured size of the dragged child.
 typedef PlaceholderBuilder = Widget Function(BuildContext context, Size size);
+
+/// Returns the offset of every child of [ReorderableBuilder.wrap].
+///
+/// [keys] and [sizes] belong to the children in their current order, the
+/// returned offsets have to be in the same order. They are relative to the
+/// top left of the widget returned by [ReorderableBuilder.builder], which is
+/// laid out with [constraints]. The builder has to show the children at the
+/// same offsets.
+typedef ReorderableLayoutOffsets = List<Offset> Function({
+  required List<Key> keys,
+  required List<Size> sizes,
+  required BoxConstraints constraints,
+});
