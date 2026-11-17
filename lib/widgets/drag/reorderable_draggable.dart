@@ -122,11 +122,15 @@ class _ReorderableDraggableState extends State<ReorderableDraggable>
       return child;
     }
 
+    // Another child is dragged: this child stays in the tree with the same
+    // widgets, so its state survives, but it cannot start a drag itself.
+    final maxSimultaneousDrags = currentDraggedEntity != null ? 0 : null;
     late final Widget draggable;
 
     // if delay is Duration.zero, LongPressDraggable breaks onTap for [child]
     if (!widget.enableLongPress || widget.longPressDelay == Duration.zero) {
       draggable = Draggable(
+        maxSimultaneousDrags: maxSimultaneousDrags,
         onDragStarted: _handleDragStarted,
         onDraggableCanceled: (Velocity velocity, Offset offset) {
           _handleDragEnd(offset);
@@ -139,6 +143,7 @@ class _ReorderableDraggableState extends State<ReorderableDraggable>
     } else {
       draggable = LongPressDraggable(
         delay: widget.longPressDelay,
+        maxSimultaneousDrags: maxSimultaneousDrags,
         onDragStarted: _handleDragStarted,
         onDraggableCanceled: (Velocity velocity, Offset offset) {
           _handleDragEnd(offset);
@@ -155,7 +160,7 @@ class _ReorderableDraggableState extends State<ReorderableDraggable>
       maintainAnimation: true,
       maintainSize: true,
       maintainState: true,
-      child: widget.currentDraggedEntity != null ? child : draggable,
+      child: draggable,
     );
 
     final placeholderBuilder = widget.placeholderBuilder;

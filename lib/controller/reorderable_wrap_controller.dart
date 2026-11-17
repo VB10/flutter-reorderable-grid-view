@@ -3,6 +3,8 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_reorderable_grid_view/controller/reorderable_builder_controller.dart';
 import 'package:flutter_reorderable_grid_view/entities/reorder_update_entity.dart';
 import 'package:flutter_reorderable_grid_view/entities/reorderable_entity.dart';
+import 'package:flutter_reorderable_grid_view/entities/reorderable_layout_candidate.dart';
+import 'package:flutter_reorderable_grid_view/utils/definitions.dart';
 import 'package:flutter_reorderable_grid_view/widgets/reorderable_builder.dart';
 
 /// Handles drag and drop of the children in [ReorderableBuilder.wrap].
@@ -19,6 +21,11 @@ class ReorderableWrapController extends ReorderableBuilderController {
 
   /// Key of the child that collided last with the dragged child.
   Key? _lastCollisionKey;
+
+  /// Calculates the positions of the children instead of a [Wrap].
+  ///
+  /// See [ReorderableBuilder.layoutOffsets].
+  ReorderableLayoutOffsets? layoutOffsets;
 
   /// Updates the children and measures the ones with a new position again.
   ///
@@ -114,6 +121,13 @@ class ReorderableWrapController extends ReorderableBuilderController {
     required ReorderableEntity? collision,
     required Offset draggedOffset,
   }) {
+    if (layoutOffsets != null) {
+      return _applyLayoutCollision(
+        collision: collision,
+        draggedOffset: draggedOffset,
+      );
+    }
+
     if (collision?.key == _lastCollisionKey) {
       return false;
     }
@@ -202,18 +216,213 @@ class ReorderableWrapController extends ReorderableBuilderController {
   bool _isLocked({required ReorderableEntity entity}) =>
       lockedIndices.contains(entity.updatedOrderId);
 
+  /// Applies [collision] when the positions come from [layoutOffsets].
+  ///
+  /// The dragged child moves to an order in which it lies under the pointer
+  /// at [draggedOffset]. Of these orders, the one that moves the other
+  /// children the least is taken, so dragging a child onto another one
+  /// exchanges both instead of moving every child after them. Nothing
+  /// changes while the dragged child already lies under the pointer, or if
+  /// no order places it there, e.g. over the gap between two children.
+  bool _applyLayoutCollision({
+    required ReorderableEntity? collision,
+    required Offset draggedOffset,
+  }) {
+    final draggedKey = draggedEntity?.key;
+    final renderBox = _getRenderBox();
+    if (draggedKey == null || renderBox == null) {
+      return false;
+    }
+
+    final currentOrder = _getOrderedEntities();
+    final draggedIndex = currentOrder.indexWhere(
+      (entity) => entity.key == draggedKey,
+    );
+    if (draggedIndex < 0) {
+      return false;
+    }
+
+    final dragged = currentOrder[draggedIndex];
+    final origin = _getLayoutOrigin(renderBox: renderBox);
+    final current = _layOutOrder(
+      order: currentOrder,
+      renderBox: renderBox,
+      origin: origin,
+    );
+    if (current.rectOf(dragged).contains(draggedOffset)) {
+      return false;
+    }
+
+    final best = _leastMovingCandidate(
+      current: current,
+      dragged: dragged,
+      collision: collision,
+      draggedOffset: draggedOffset,
+      renderBox: renderBox,
+      origin: origin,
+    );
+    if (best == null) {
+      return false;
+    }
+
+    _applyCandidate(best);
+    return true;
+  }
+
+  /// Returns the order that puts [dragged] under [draggedOffset] and moves
+  /// the other children of [current] the least, or null if there is none.
+  ReorderableLayoutCandidate? _leastMovingCandidate({
+    required ReorderableLayoutCandidate current,
+    required ReorderableEntity dragged,
+    required ReorderableEntity? collision,
+    required Offset draggedOffset,
+    required RenderBox renderBox,
+    required Offset origin,
+  }) {
+    ReorderableLayoutCandidate? best;
+    var bestMovement = double.infinity;
+
+    for (final order in _candidateOrders(
+      currentOrder: current.order,
+      dragged: dragged,
+      collision: collision,
+    )) {
+      final candidate = _layOutOrder(
+        order: order,
+        renderBox: renderBox,
+        origin: origin,
+      );
+      if (!candidate.rectOf(dragged).contains(draggedOffset)) {
+        continue;
+      }
+
+      final movement = candidate.movementFrom(current, movedEntity: dragged);
+      if (movement < bestMovement) {
+        best = candidate;
+        bestMovement = movement;
+      }
+    }
+
+    return best;
+  }
+
+  /// Gives every child of [candidate] its index and offset in it.
+  void _applyCandidate(ReorderableLayoutCandidate candidate) {
+    for (final (index, entity) in candidate.order.indexed) {
+      _updateEntity(
+        entity: entity.dragUpdated(
+          updatedOrderId: index,
+          updatedOffset: candidate.offsets[index],
+        ),
+      );
+    }
+  }
+
+  /// Lays out [order] in [renderBox], starting at [origin].
+  ReorderableLayoutCandidate _layOutOrder({
+    required List<ReorderableEntity> order,
+    required RenderBox renderBox,
+    required Offset origin,
+  }) {
+    final offsets = _layOut(entities: order, renderBox: renderBox)
+        .map((offset) => offset + origin)
+        .toList();
+    return ReorderableLayoutCandidate(order: order, offsets: offsets);
+  }
+
+  /// Returns the orders [dragged] can move to.
+  ///
+  /// These are [dragged] exchanged with [collision] and [dragged] moved to
+  /// every other index. Orders that move a locked child are left out.
+  List<List<ReorderableEntity>> _candidateOrders({
+    required List<ReorderableEntity> currentOrder,
+    required ReorderableEntity dragged,
+    required ReorderableEntity? collision,
+  }) {
+    final exchanged = _exchangedOrder(
+      currentOrder: currentOrder,
+      dragged: dragged,
+      collision: collision,
+    );
+    final candidates = [
+      if (exchanged != null) exchanged,
+      ..._movedOrders(currentOrder: currentOrder, dragged: dragged),
+    ];
+    return candidates
+        .where(
+          (order) => _keepsLockedChildren(
+            order: order,
+            currentOrder: currentOrder,
+          ),
+        )
+        .toList();
+  }
+
+  /// Returns [currentOrder] with [dragged] and [collision] exchanged, or
+  /// null without a [collision].
+  List<ReorderableEntity>? _exchangedOrder({
+    required List<ReorderableEntity> currentOrder,
+    required ReorderableEntity dragged,
+    required ReorderableEntity? collision,
+  }) {
+    if (collision == null) {
+      return null;
+    }
+
+    final draggedIndex = currentOrder.indexOf(dragged);
+    final collisionIndex = currentOrder.indexWhere(
+      (entity) => entity.key == collision.key,
+    );
+    if (collisionIndex < 0) {
+      return null;
+    }
+
+    return List.of(currentOrder)
+      ..[draggedIndex] = currentOrder[collisionIndex]
+      ..[collisionIndex] = dragged;
+  }
+
+  /// Returns [currentOrder] with [dragged] moved to every other index.
+  List<List<ReorderableEntity>> _movedOrders({
+    required List<ReorderableEntity> currentOrder,
+    required ReorderableEntity dragged,
+  }) {
+    final draggedIndex = currentOrder.indexOf(dragged);
+    final others = List.of(currentOrder)..removeAt(draggedIndex);
+    return [
+      for (var index = 0; index <= others.length; index++)
+        if (index != draggedIndex) List.of(others)..insert(index, dragged),
+    ];
+  }
+
+  /// Returns true if every locked child of [currentOrder] keeps its index.
+  bool _keepsLockedChildren({
+    required List<ReorderableEntity> order,
+    required List<ReorderableEntity> currentOrder,
+  }) {
+    for (final lockedIndex in lockedIndices) {
+      if (lockedIndex >= currentOrder.length) {
+        continue;
+      }
+      if (order[lockedIndex].key != currentOrder[lockedIndex].key) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   /// Lays out all children in their current order like the [Wrap].
   void _updatePositions() {
-    final renderWrap = _getRenderWrap();
+    final renderBox = _getRenderBox();
 
-    if (renderWrap == null) {
+    if (renderBox == null) {
       return;
     }
 
     final entities = _getOrderedEntities();
     final offsets = _calculateOffsets(
       orderedEntities: entities,
-      renderWrap: renderWrap,
+      renderBox: renderBox,
     );
 
     for (final (index, entity) in entities.indexed) {
@@ -237,19 +446,37 @@ class ReorderableWrapController extends ReorderableBuilderController {
       childrenKeyMap.values.toList()
         ..sort((a, b) => a.updatedOrderId.compareTo(b.updatedOrderId));
 
-  /// Returns the offsets of [orderedEntities] laid out by [renderWrap].
+  /// Returns the offsets of [orderedEntities] laid out in [renderBox].
   ///
   /// The offsets are in the same coordinates as [ReorderableEntity.updatedOffset].
   List<Offset> _calculateOffsets({
     required List<ReorderableEntity> orderedEntities,
-    required RenderWrap renderWrap,
+    required RenderBox renderBox,
   }) {
-    final wrapOffset = _getWrapOffset(renderWrap: renderWrap);
-    final offsets = calculateWrapOffsets(
-      sizes: orderedEntities.map((e) => e.size).toList(),
-      renderWrap: renderWrap,
+    final layoutOrigin = _getLayoutOrigin(renderBox: renderBox);
+    final offsets = _layOut(entities: orderedEntities, renderBox: renderBox);
+    return offsets.map((e) => e + layoutOrigin).toList();
+  }
+
+  /// Returns the offsets of [entities] relative to the top left of
+  /// [renderBox], calculated by [layoutOffsets] or like a [Wrap].
+  List<Offset> _layOut({
+    required List<ReorderableEntity> entities,
+    required RenderBox renderBox,
+  }) {
+    final sizes = entities.map((e) => e.size).toList();
+    final layoutOffsets = this.layoutOffsets;
+    if (layoutOffsets != null) {
+      return layoutOffsets(
+        keys: entities.map((e) => e.key).toList(),
+        sizes: sizes,
+        constraints: renderBox.constraints,
+      );
+    }
+    return calculateWrapOffsets(
+      sizes: sizes,
+      renderWrap: renderBox as RenderWrap,
     );
-    return offsets.map((e) => e + wrapOffset).toList();
   }
 
   /// Calculates the offsets of children with [sizes] like [renderWrap] would do.
@@ -290,28 +517,32 @@ class ReorderableWrapController extends ReorderableBuilderController {
     return offsets;
   }
 
-  /// Returns the rendered [Wrap] of [wrapKey].
-  RenderWrap? _getRenderWrap() {
-    final renderWrap = wrapKey.currentContext?.findRenderObject();
+  /// Returns the rendered widget of [wrapKey].
+  ///
+  /// Without [layoutOffsets], it has to be a [Wrap].
+  RenderBox? _getRenderBox() {
+    final renderObject = wrapKey.currentContext?.findRenderObject();
+    final isSupported = layoutOffsets != null || renderObject is RenderWrap;
     assert(
-      renderWrap is RenderWrap,
-      'The builder of ReorderableBuilder.wrap has to return a Wrap.',
+      isSupported,
+      'The builder of ReorderableBuilder.wrap has to return a Wrap '
+      'if layoutOffsets is not set.',
     );
 
-    if (renderWrap is! RenderWrap) {
+    if (!isSupported || renderObject is! RenderBox) {
       return null;
     }
 
-    return renderWrap;
+    return renderObject;
   }
 
-  /// Returns the top left position of the [Wrap].
+  /// Returns the top left position of the laid out children.
   ///
   /// The original offsets were measured before dragging and don't change
   /// while dragging. Laying out the children in their original order gives
-  /// their offsets inside the [Wrap], the difference to a measured offset is
-  /// the position of the [Wrap].
-  Offset _getWrapOffset({required RenderWrap renderWrap}) {
+  /// their offsets inside [renderBox], the difference to a measured offset
+  /// is the position of [renderBox].
+  Offset _getLayoutOrigin({required RenderBox renderBox}) {
     // new children have no original offset
     final originalEntities = childrenKeyMap.values
         .where((entity) => !entity.isNew)
@@ -321,10 +552,7 @@ class ReorderableWrapController extends ReorderableBuilderController {
       return Offset.zero;
     }
 
-    final offsets = calculateWrapOffsets(
-      sizes: originalEntities.map((e) => e.size).toList(),
-      renderWrap: renderWrap,
-    );
+    final offsets = _layOut(entities: originalEntities, renderBox: renderBox);
 
     return originalEntities.first.originalOffset - offsets.first;
   }

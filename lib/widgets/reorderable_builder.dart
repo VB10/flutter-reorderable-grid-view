@@ -157,6 +157,17 @@ class ReorderableBuilder<T> extends StatefulWidget {
   /// the drag ends.
   final PlaceholderBuilder? placeholderBuilder;
 
+  /// Calculates the positions of the children of [ReorderableBuilder.wrap].
+  ///
+  /// Without it, the children are positioned like a [Wrap] would do it and
+  /// [builder] has to return a [Wrap]. With it, [builder] can return any
+  /// widget that shows the children at the offsets of [layoutOffsets], e.g.
+  /// a [Stack] with a grid of cells that children of different sizes span.
+  ///
+  /// While dragging, the dragged child moves to the order in which its
+  /// position is closest to the pointer.
+  final ReorderableLayoutOffsets? layoutOffsets;
+
   /// It's required to use [ReorderableBuilder] to obtain updated [children].
   ///
   /// This function returns the [children] containing all necessary widgets
@@ -255,6 +266,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
         ),
         childBuilder = null,
         itemCount = null,
+        layoutOffsets = null,
         _type = ReorderableBuilderType.children;
 
   const ReorderableBuilder.builder({
@@ -293,11 +305,13 @@ class ReorderableBuilder<T> extends StatefulWidget {
         ),
         children = null,
         builder = null,
+        layoutOffsets = null,
         _type = ReorderableBuilderType.builder;
 
   /// Enables drag and drop for [children] shown in a [Wrap].
   ///
-  /// Important: [builder] has to return a [Wrap] directly.
+  /// Important: [builder] has to return a [Wrap] directly, unless
+  /// [layoutOffsets] calculates the positions of the children.
   ///
   /// [lockedIndices] are never exchanged, so they keep their index, but they
   /// can move on the screen to make space.
@@ -318,6 +332,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
     this.enableScrollingWhileDragging = _defaultEnableScrollingWhileDragging,
     this.dragChildBoxDecoration,
     this.placeholderBuilder,
+    this.layoutOffsets,
     this.onDragStarted,
     this.onDragEnd,
     this.onUpdatedDraggedChild,
@@ -345,19 +360,43 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
   /// Only created when used by [ReorderableBuilder.wrap].
   late final reorderableWrapController = ReorderableWrapController();
 
+  /// The children that are shown, usually [ReorderableBuilder.children].
+  ///
+  /// While a child is dragged, new children are not shown until the drag
+  /// ended. Updating them while dragging would measure some children again
+  /// at their original position while the others keep their dragged
+  /// position, so children would overlap.
+  List<Widget>? _children;
+
+  /// True if a child changed its size while another child was dragged.
+  ///
+  /// Measuring all children again while dragging would reset the order that
+  /// was changed by the drag, so it is done after the drag ended.
+  bool _hasPendingSizeChange = false;
+
   @override
   void initState() {
     super.initState();
     _initControllers();
+    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
   }
 
   @override
   void didUpdateWidget(covariant ReorderableBuilder<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
+    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
 
     final children = widget.children;
-    if (children == null || children == oldWidget.children) return;
+    if (children == null || children == _children) return;
+    if (_isDragging) return;
 
+    _updateChildren(children: children);
+  }
+
+  bool get _isDragging => _reorderableController.draggedEntity != null;
+
+  void _updateChildren({required List<Widget> children}) {
+    _children = children;
     reorderableBuilderController.updateChildren(children: children);
     setState(() {});
   }
@@ -377,7 +416,7 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
       onSizeChanged: _handleSizeChanged,
       type: widget._type,
       child: ReorderableRemovedChildren(
-        children: widget.children,
+        children: _children,
         itemCount: widget.itemCount,
         controller: _reorderableController,
         animationConfig: widget.animationConfig,
@@ -410,6 +449,7 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
     reorderableItemBuilderController = ReorderableItemBuilderController();
 
     final children = widget.children;
+    _children = children;
     if (children == null) return;
 
     reorderableBuilderController.initChildren(children: children);
@@ -439,7 +479,7 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
     final childrenKeyMap = reorderableBuilderController.childrenKeyMap;
 
     return [
-      for (final (index, child) in widget.children!.indexed)
+      for (final (index, child) in _children!.indexed)
         _wrapChild(
           child: child,
           index: index,
@@ -590,6 +630,11 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
     final draggedEntity = _reorderableController.draggedEntity;
     if (draggedEntity == null) return;
 
+    // after the parent had the chance to rebuild with the new order
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _applyUpdatesAfterDragging(),
+    );
+
     widget.onDragEnd?.call(draggedEntity.updatedOrderId);
 
     final reorderUpdateEntities = _reorderableController.handleDragEnd();
@@ -682,10 +727,29 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
   /// Cached sizes and offsets would be stale, so all children are re-measured.
   void _handleSizeChanged() {
     if (!mounted) return;
+    if (_isDragging) {
+      _hasPendingSizeChange = true;
+      return;
+    }
 
     setState(() {
       _reorderableController.handleSizeChanged();
     });
+  }
+
+  /// Applies new children and sizes that changed while dragging.
+  void _applyUpdatesAfterDragging() {
+    if (!mounted || _isDragging) return;
+
+    final children = widget.children;
+    if (children != null && children != _children) {
+      _updateChildren(children: children);
+    }
+
+    if (_hasPendingSizeChange) {
+      _hasPendingSizeChange = false;
+      _handleSizeChanged();
+    }
   }
 
   ReorderableDragAndDropController get _reorderableController =>

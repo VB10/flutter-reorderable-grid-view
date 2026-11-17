@@ -219,10 +219,48 @@ void main() {
             widget.maintainAnimation &&
             widget.maintainSize &&
             widget.maintainState &&
-            widget.child == givenChild,
+            widget.child is LongPressDraggable &&
+            (widget.child as LongPressDraggable).maxSimultaneousDrags == 0 &&
+            (widget.child as LongPressDraggable).child == givenChild,
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets(
+      "GIVEN a stateful child "
+      "WHEN another child starts and stops being dragged "
+      "THEN should keep the state of the child", (WidgetTester tester) async {
+    // given
+    var createdStates = 0;
+    final statefulChild = _CountingChild(onCreated: () => createdStates++);
+    await pumpWidget(
+      tester,
+      enableDraggable: true,
+      enableLongPress: true,
+      child: statefulChild,
+    );
+
+    // when
+    await pumpWidget(
+      tester,
+      enableDraggable: true,
+      enableLongPress: true,
+      currentDraggedEntity: givenReorderableEntity.dragUpdated(
+        updatedOrderId: givenReorderableEntity.updatedOrderId + 1,
+        updatedOffset: givenReorderableEntity.updatedOffset,
+      ),
+      child: statefulChild,
+    );
+    await pumpWidget(
+      tester,
+      enableDraggable: true,
+      enableLongPress: true,
+      child: statefulChild,
+    );
+
+    // then
+    expect(createdStates, equals(1));
   });
 
   group('#LongPressDraggable', () {
@@ -511,4 +549,24 @@ void main() {
       );
     });
   });
+}
+
+class _CountingChild extends StatefulWidget {
+  final VoidCallback onCreated;
+
+  const _CountingChild({required this.onCreated});
+
+  @override
+  State<_CountingChild> createState() => _CountingChildState();
+}
+
+class _CountingChildState extends State<_CountingChild> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onCreated();
+  }
+
+  @override
+  Widget build(BuildContext context) => const SizedBox.shrink();
 }

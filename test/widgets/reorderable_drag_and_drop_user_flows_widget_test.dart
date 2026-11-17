@@ -225,9 +225,11 @@ void main() {
   group('#Wrap', () {
     late StateSetter setItems;
     final actualUpdatedIndices = <int>[];
+    var grownItem = -1;
 
     setUp(() {
       actualUpdatedIndices.clear();
+      grownItem = -1;
       final view = TestWidgetsFlutterBinding.instance.platformDispatcher.views;
       view.first.physicalSize = const Size(400.0, 800.0);
       view.first.devicePixelRatio = 1.0;
@@ -268,7 +270,7 @@ void main() {
                       SizedBox(
                         key: Key('$item'),
                         width: 60.0 + (item % 4) * 40.0,
-                        height: 50.0,
+                        height: item == grownItem ? 80.0 : 50.0,
                         child: const ColoredBox(color: Colors.lightBlue),
                       ),
                   ],
@@ -577,6 +579,267 @@ void main() {
       expect(getOffset(tester, 3), equals(const Offset(204, 0)));
       expect(getOffset(tester, 5), equals(const Offset(0, 54)));
     });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] and a dragged child '
+        'WHEN the parent builds new children while dragging '
+        'THEN should keep all children at their dragged position',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+      final gesture = await startDrag(tester, 0);
+      await gesture.moveTo(tester.getCenter(find.byKey(const Key('3'))));
+      await tester.pumpAndSettle();
+      final givenOffsets = [1, 2, 3, 4, 5].map((item) {
+        return getOffset(tester, item);
+      }).toList();
+
+      // when
+      setItems(() {});
+      await tester.pumpAndSettle();
+
+      // then
+      final actualOffsets = [1, 2, 3, 4, 5].map((item) {
+        return getOffset(tester, item);
+      }).toList();
+      expect(actualOffsets, equals(givenOffsets));
+
+      await gesture.up();
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] and a dragged child '
+        'WHEN another child changes its size while dragging '
+        'THEN should keep the dragged order after releasing',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+      final gesture = await startDrag(tester, 0);
+      await gesture.moveTo(tester.getCenter(find.byKey(const Key('3'))));
+      await tester.pumpAndSettle();
+
+      // when
+      setItems(() => grownItem = 5);
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // then
+      expect(actualItems, equals(const [3, 1, 2, 0, 4, 5]));
+      expect(tester.getSize(find.byKey(const Key('5'))).height, equals(80.0));
+    });
+  });
+
+  /// Children of different sizes placed in a grid of cells by
+  /// [ReorderableBuilder.layoutOffsets] instead of a [Wrap].
+  group('#Wrap with layoutOffsets', () {
+    const givenCellSize = 100.0;
+    const givenColumns = 4;
+
+    setUp(() {
+      actualItems = const [0, 1, 2, 3, 4];
+      final view = TestWidgetsFlutterBinding.instance.platformDispatcher.views;
+      view.first.physicalSize = const Size(400.0, 800.0);
+      view.first.devicePixelRatio = 1.0;
+    });
+
+    tearDown(() {
+      final view = TestWidgetsFlutterBinding.instance.platformDispatcher.views;
+      view.first.resetPhysicalSize();
+      view.first.resetDevicePixelRatio();
+    });
+
+    /// Items 0 and 1 span 2x2 cells, the others one cell.
+    Size sizeOf(int item) =>
+        Size.square(item < 2 ? givenCellSize * 2 : givenCellSize);
+
+    List<Offset> layOut(List<Size> sizes) => _CellGrid.layOut(
+          sizes: sizes,
+          cellSize: givenCellSize,
+          columns: givenColumns,
+        );
+
+    Future<void> pumpWidget(
+      WidgetTester tester, {
+      List<int> lockedIndices = const [],
+    }) =>
+        pumpWidgetWithMaterialApp(
+          tester,
+          child: SingleChildScrollView(
+            child: StatefulBuilder(
+              builder: (context, setState) {
+                return ReorderableBuilder<int>.wrap(
+                  lockedIndices: lockedIndices,
+                  onReorder: (reorder) =>
+                      setState(() => actualItems = reorder(actualItems)),
+                  layoutOffsets: ({
+                    required keys,
+                    required sizes,
+                    required constraints,
+                  }) =>
+                      layOut(sizes),
+                  builder: (children) {
+                    final offsets = layOut(actualItems.map(sizeOf).toList());
+                    return SizedBox(
+                      height: givenCellSize * 3,
+                      child: Stack(
+                        children: [
+                          for (final (index, child) in children.indexed)
+                            Positioned(
+                              key: child.key,
+                              left: offsets[index].dx,
+                              top: offsets[index].dy,
+                              child: child,
+                            ),
+                        ],
+                      ),
+                    );
+                  },
+                  children: [
+                    for (final item in actualItems)
+                      SizedBox.fromSize(
+                        key: Key('$item'),
+                        size: sizeOf(item),
+                        child: const ColoredBox(color: Colors.lightBlue),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        );
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets '
+        'WHEN pumping it '
+        'THEN should show the children at the calculated offsets',
+        (WidgetTester tester) async {
+      // when
+      await pumpWidget(tester);
+
+      // then
+      expect(getOffset(tester, 0), equals(const Offset(0, 0)));
+      expect(getOffset(tester, 1), equals(const Offset(200, 0)));
+      expect(getOffset(tester, 2), equals(const Offset(0, 200)));
+      expect(getOffset(tester, 3), equals(const Offset(100, 200)));
+      expect(getOffset(tester, 4), equals(const Offset(200, 200)));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets '
+        'WHEN releasing a small child on a big child '
+        'THEN should move it to the order that places it under the pointer',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+
+      // when
+      await dragAndRelease(tester, item: 4, position: const Offset(250, 50));
+
+      // then
+      expect(actualItems, equals(const [0, 4, 1, 2, 3]));
+      expect(getOffset(tester, 4), equals(const Offset(200, 0)));
+      expect(getOffset(tester, 1), equals(const Offset(200, 100)));
+      expect(getOffset(tester, 2), equals(const Offset(300, 0)));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets '
+        'WHEN releasing a child where no order can place it '
+        'THEN should keep the order',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+
+      // when
+      await dragAndRelease(tester, item: 2, position: const Offset(350, 250));
+
+      // then
+      expect(actualItems, equals(const [0, 1, 2, 3, 4]));
+      expect(getOffset(tester, 2), equals(const Offset(0, 200)));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets and a locked child '
+        'WHEN releasing another child on the locked child '
+        'THEN should keep the locked child at its index',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester, lockedIndices: [0]);
+
+      // when
+      await dragAndRelease(tester, item: 4, position: const Offset(50, 50));
+
+      // then
+      expect(actualItems.first, equals(0));
+      expect(getOffset(tester, 0), equals(const Offset(0, 0)));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets '
+        'WHEN releasing a child on a later child '
+        'THEN should exchange both and keep the child between them in place',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+
+      // when
+      await dragAndRelease(tester, item: 2, position: const Offset(250, 250));
+
+      // then
+      expect(actualItems, equals(const [0, 1, 4, 3, 2]));
+      expect(getOffset(tester, 2), equals(const Offset(200, 200)));
+      expect(getOffset(tester, 4), equals(const Offset(0, 200)));
+      expect(getOffset(tester, 3), equals(const Offset(100, 200)));
+      expect(getOffset(tester, 0), equals(const Offset(0, 0)));
+      expect(getOffset(tester, 1), equals(const Offset(200, 0)));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets and a dragged child '
+        'WHEN the pointer moves around on the child it was moved over '
+        'THEN should keep the order instead of moving back and forth',
+        (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.byKey(const Key('4'))),
+        pointer: 7,
+      );
+      await tester.pump(kLongPressTimeout);
+      await tester.pumpAndSettle();
+
+      // when
+      for (final position in const [
+        Offset(250, 50),
+        Offset(280, 120),
+        Offset(220, 180),
+        Offset(260, 90),
+      ]) {
+        await gesture.moveTo(position);
+        await tester.pumpAndSettle();
+      }
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      // then
+      expect(actualItems, equals(const [0, 4, 1, 2, 3]));
+    });
+
+    testWidgets(
+        'GIVEN [ReorderableBuilder.wrap] with layoutOffsets and a dragged child '
+        'WHEN the pointer stays on the dragged child '
+        'THEN should not change the order', (WidgetTester tester) async {
+      // given
+      await pumpWidget(tester);
+
+      // when
+      await dragAndRelease(tester, item: 3, position: const Offset(160, 260));
+
+      // then
+      expect(actualItems, equals(const [0, 1, 2, 3, 4]));
+    });
   });
 
   /// Children measured while an outer scrollable is scrolled have to be at
@@ -755,4 +1018,55 @@ void main() {
       expect(getOffset(tester, 21).dy, equals(givenOffset.dy));
     });
   });
+}
+
+/// Places children in a grid of square cells.
+///
+/// Every child takes the first free cell, row by row, where it fits.
+class _CellGrid {
+  static List<Offset> layOut({
+    required List<Size> sizes,
+    required double cellSize,
+    required int columns,
+  }) {
+    final taken = <(int, int)>{};
+    final offsets = <Offset>[];
+    for (final size in sizes) {
+      final width = (size.width / cellSize).round();
+      final height = (size.height / cellSize).round();
+      var row = 0;
+      var column = 0;
+      while (!_fits(taken, row, column, width, height, columns)) {
+        column++;
+        if (column + width > columns) {
+          column = 0;
+          row++;
+        }
+      }
+      for (var y = row; y < row + height; y++) {
+        for (var x = column; x < column + width; x++) {
+          taken.add((x, y));
+        }
+      }
+      offsets.add(Offset(column * cellSize, row * cellSize));
+    }
+    return offsets;
+  }
+
+  static bool _fits(
+    Set<(int, int)> taken,
+    int row,
+    int column,
+    int width,
+    int height,
+    int columns,
+  ) {
+    if (column + width > columns) return false;
+    for (var y = row; y < row + height; y++) {
+      for (var x = column; x < column + width; x++) {
+        if (taken.contains((x, y))) return false;
+      }
+    }
+    return true;
+  }
 }
