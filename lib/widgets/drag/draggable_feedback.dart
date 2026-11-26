@@ -5,6 +5,10 @@ import 'package:flutter_reorderable_grid_view/widgets/drag/drag_feedback_transit
 class DraggableFeedback extends StatefulWidget {
   final Widget child;
   final Size size;
+
+  /// Returns the size of the dragged child on the screen when this feedback
+  /// is built, which [size] can miss if it was measured before a size change.
+  final ValueGetter<Size>? sizeOf;
   final Animation<Decoration> decoration;
 
   /// Scale factor of the default transition (default: 1.05).
@@ -22,6 +26,7 @@ class DraggableFeedback extends StatefulWidget {
   const DraggableFeedback({
     required this.child,
     required this.size,
+    this.sizeOf,
     required this.decoration,
     required this.feedbackScaleFactor,
     required this.onDeactivate,
@@ -75,10 +80,11 @@ class _DraggableFeedbackState extends State<DraggableFeedback>
       child: widget.child,
     );
 
+    final size = widget.sizeOf?.call() ?? widget.size;
     return Material(
       color: Colors.transparent, // removes white corners when having shadow
       child: SizedBox.fromSize(
-        size: widget.size,
+        size: size,
         child: DragFeedbackTransition(
           animationConfig: widget.animationConfig,
           feedbackScaleFactor: widget.feedbackScaleFactor,
