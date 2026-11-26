@@ -27,6 +27,11 @@ class ReorderableWrapController extends ReorderableBuilderController {
   /// See [ReorderableBuilder.layoutOffsets].
   ReorderableLayoutOffsets? layoutOffsets;
 
+  /// Moves the dragged child to the order that moves the others the least.
+  ///
+  /// See [ReorderableBuilder.enableLeastMovingOrder].
+  bool isLeastMovingOrderEnabled = false;
+
   /// Updates the children and measures the ones with a new position again.
   ///
   /// [offsetMap] caches the offset of every index. That only works if every
@@ -121,7 +126,7 @@ class ReorderableWrapController extends ReorderableBuilderController {
     required ReorderableEntity? collision,
     required Offset draggedOffset,
   }) {
-    if (layoutOffsets != null) {
+    if (layoutOffsets != null || isLeastMovingOrderEnabled) {
       return _applyLayoutCollision(
         collision: collision,
         draggedOffset: draggedOffset,

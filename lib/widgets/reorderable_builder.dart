@@ -168,6 +168,15 @@ class ReorderableBuilder<T> extends StatefulWidget {
   /// position is closest to the pointer.
   final ReorderableLayoutOffsets? layoutOffsets;
 
+  /// Moves the dragged child of [ReorderableBuilder.wrap] to the order in
+  /// which it lies under the pointer and the other children move the least.
+  ///
+  /// By default, the dragged child exchanges its index with the child under
+  /// it. With children of different sizes, that can move children the pointer
+  /// never touched to another line. This is always the case with
+  /// [layoutOffsets]; without it, the orders are laid out like the [Wrap].
+  final bool enableLeastMovingOrder;
+
   /// It's required to use [ReorderableBuilder] to obtain updated [children].
   ///
   /// This function returns the [children] containing all necessary widgets
@@ -267,6 +276,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
         childBuilder = null,
         itemCount = null,
         layoutOffsets = null,
+        enableLeastMovingOrder = false,
         _type = ReorderableBuilderType.children;
 
   const ReorderableBuilder.builder({
@@ -306,6 +316,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
         children = null,
         builder = null,
         layoutOffsets = null,
+        enableLeastMovingOrder = false,
         _type = ReorderableBuilderType.builder;
 
   /// Enables drag and drop for [children] shown in a [Wrap].
@@ -333,6 +344,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
     this.dragChildBoxDecoration,
     this.placeholderBuilder,
     this.layoutOffsets,
+    this.enableLeastMovingOrder = false,
     this.onDragStarted,
     this.onDragEnd,
     this.onUpdatedDraggedChild,
@@ -385,13 +397,17 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
   void initState() {
     super.initState();
     _initControllers();
-    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
+    reorderableWrapController
+      ..layoutOffsets = widget.layoutOffsets
+      ..isLeastMovingOrderEnabled = widget.enableLeastMovingOrder;
   }
 
   @override
   void didUpdateWidget(covariant ReorderableBuilder<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
+    reorderableWrapController
+      ..layoutOffsets = widget.layoutOffsets
+      ..isLeastMovingOrderEnabled = widget.enableLeastMovingOrder;
 
     final children = widget.children;
     if (children == null || children == _children) return;
