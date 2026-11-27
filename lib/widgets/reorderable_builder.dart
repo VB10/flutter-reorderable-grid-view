@@ -168,6 +168,15 @@ class ReorderableBuilder<T> extends StatefulWidget {
   /// position is closest to the pointer.
   final ReorderableLayoutOffsets? layoutOffsets;
 
+  /// Moves the dragged child of [ReorderableBuilder.wrap] to the order in
+  /// which it lies under the pointer and the other children move the least.
+  ///
+  /// By default, the dragged child exchanges its index with the child under
+  /// it. With children of different sizes, that can move children the pointer
+  /// never touched to another line. This is always the case with
+  /// [layoutOffsets]; without it, the orders are laid out like the [Wrap].
+  final bool enableLeastMovingOrder;
+
   /// It's required to use [ReorderableBuilder] to obtain updated [children].
   ///
   /// This function returns the [children] containing all necessary widgets
@@ -267,6 +276,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
         childBuilder = null,
         itemCount = null,
         layoutOffsets = null,
+        enableLeastMovingOrder = false,
         _type = ReorderableBuilderType.children;
 
   const ReorderableBuilder.builder({
@@ -306,6 +316,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
         children = null,
         builder = null,
         layoutOffsets = null,
+        enableLeastMovingOrder = false,
         _type = ReorderableBuilderType.builder;
 
   /// Enables drag and drop for [children] shown in a [Wrap].
@@ -333,6 +344,7 @@ class ReorderableBuilder<T> extends StatefulWidget {
     this.dragChildBoxDecoration,
     this.placeholderBuilder,
     this.layoutOffsets,
+    this.enableLeastMovingOrder = false,
     this.onDragStarted,
     this.onDragEnd,
     this.onUpdatedDraggedChild,
@@ -374,17 +386,28 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
   /// was changed by the drag, so it is done after the drag ended.
   bool _hasPendingSizeChange = false;
 
+  /// Keys of the boxes that measure the children, by the value of their key.
+  ///
+  /// The boxes are laid out where the children are shown, so their position
+  /// and size are always up to date, unlike the measured entities that wait
+  /// for the next measurement after a size change.
+  final _measuringKeys = <dynamic, GlobalKey>{};
+
   @override
   void initState() {
     super.initState();
     _initControllers();
-    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
+    reorderableWrapController
+      ..layoutOffsets = widget.layoutOffsets
+      ..isLeastMovingOrderEnabled = widget.enableLeastMovingOrder;
   }
 
   @override
   void didUpdateWidget(covariant ReorderableBuilder<T> oldWidget) {
     super.didUpdateWidget(oldWidget);
-    reorderableWrapController.layoutOffsets = widget.layoutOffsets;
+    reorderableWrapController
+      ..layoutOffsets = widget.layoutOffsets
+      ..isLeastMovingOrderEnabled = widget.enableLeastMovingOrder;
 
     final children = widget.children;
     if (children == null || children == _children) return;
@@ -554,6 +577,7 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
   ///
 
   void _handleDragStarted(ReorderableEntity reorderableEntity) {
+    _syncEntitiesWithLayout();
     _reorderableController.handleDragStarted(
       reorderableEntity: reorderableEntity,
       currentScrollOffset: _scrollOffset,
@@ -583,6 +607,61 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
 
       setState(() {});
     }
+  }
+
+  /// Replaces the measured entities with the positions and sizes the children
+  /// have on the screen when a drag starts.
+  ///
+  /// A size change resets the entities and measures them again. When a child
+  /// changes its size again before that measurement finished, the entities can
+  /// keep a size of zero and old positions. Dragging with them would collide
+  /// with children that are not where they are shown. The children are laid
+  /// out when a drag starts, so their boxes hold the real values. Nothing
+  /// changes if a child has no laid out box yet.
+  void _syncEntitiesWithLayout() {
+    final children = _children;
+    final parentRenderObject = context.findRenderObject();
+    if (children == null || parentRenderObject is! RenderBox) return;
+
+    final keyMap = <String, ReorderableEntity>{};
+    final orderMap = <int, ReorderableEntity>{};
+    final offsets = <int, Offset>{};
+    for (final (index, child) in children.indexed) {
+      final key = child.key;
+      if (key is! ValueKey) return;
+      final renderObject =
+          _measuringKeys[key.value]?.currentContext?.findRenderObject();
+      if (renderObject is! RenderBox || !renderObject.hasSize) return;
+
+      var offset = parentRenderObject.globalToLocal(
+        renderObject.localToGlobal(Offset.zero),
+      );
+      if (!_isScrollOutside) {
+        offset += _scrollOffset;
+      }
+      final entity = ReorderableEntity(
+        key: key,
+        originalOrderId: index,
+        updatedOrderId: index,
+        originalOffset: offset,
+        updatedOffset: offset,
+        size: renderObject.size,
+        isBuildingOffset: false,
+        hasSwappedOrder: false,
+      );
+      keyMap[key.value] = entity;
+      orderMap[index] = entity;
+      offsets[index] = offset;
+    }
+
+    final reorderableController = _reorderableController;
+    reorderableController.replaceMaps(
+      updatedChildrenKeyMap: keyMap,
+      updatedChildrenOrderMap: orderMap,
+    );
+    reorderableController.offsetMap
+      ..clear()
+      ..addAll(offsets);
   }
 
   /// Called after dragged item was released.
@@ -685,6 +764,7 @@ class _ReorderableBuilderState<T> extends State<ReorderableBuilder<T>> {
     ReorderableEntity reorderableEntity,
     GlobalKey key,
   ) {
+    _measuringKeys[reorderableEntity.key.value] = key;
     final reorderableController = _reorderableController;
     final offsetMap = reorderableController.offsetMap;
 

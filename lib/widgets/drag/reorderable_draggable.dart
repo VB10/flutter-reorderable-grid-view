@@ -105,6 +105,7 @@ class _ReorderableDraggableState extends State<ReorderableDraggable>
     final feedback = DraggableFeedback(
       key: _draggableFeedbackGlobalKey,
       size: reorderableEntity.size,
+      sizeOf: _slotSize,
       decoration: _decorationTween.animate(_decoratedBoxAnimationController),
       feedbackScaleFactor: widget.feedbackScaleFactor,
       animationConfig: widget.animationConfig,
@@ -181,6 +182,17 @@ class _ReorderableDraggableState extends State<ReorderableDraggable>
           ),
       ],
     );
+  }
+
+  /// Returns the size of the slot of this child on the screen, or the measured
+  /// size while the slot has no laid out box.
+  Size _slotSize() {
+    if (!mounted) return widget.reorderableEntity.size;
+    final renderObject = context.findRenderObject();
+    if (renderObject is RenderBox && renderObject.hasSize) {
+      return renderObject.size;
+    }
+    return widget.reorderableEntity.size;
   }
 
   /// Called after dragging started.

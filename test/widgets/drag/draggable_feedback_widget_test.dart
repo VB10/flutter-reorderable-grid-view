@@ -21,11 +21,13 @@ void main() {
       ),
     ),
     VoidCallback? onDeactivate,
+    ValueGetter<Size>? sizeOf,
   }) =>
       tester.pumpWidget(
         MaterialApp(
           home: DraggableFeedback(
             size: givenSize,
+            sizeOf: sizeOf,
             decoration: givenDecoration,
             feedbackScaleFactor: givenFeedbackScaleFactor,
             animationConfig: animationConfig,
@@ -38,6 +40,29 @@ void main() {
   Animation<double> getAnimation(WidgetTester tester) => tester
       .widget<DragFeedbackTransition>(find.byType(DragFeedbackTransition))
       .animation;
+
+  testWidgets(
+      'GIVEN sizeOf returning another size than size '
+      'WHEN pumping [DraggableFeedback] '
+      'THEN should show the child with the size of sizeOf',
+      (WidgetTester tester) async {
+    // given
+    const givenShownSize = Size(300.0, 150.0);
+
+    // when
+    await pumpWidget(tester, sizeOf: () => givenShownSize);
+
+    // then
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is SizedBox &&
+            widget.width == givenShownSize.width &&
+            widget.height == givenShownSize.height,
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
       'GIVEN size, decoration, feedbackScaleFactor and child '
